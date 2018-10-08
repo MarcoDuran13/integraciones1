@@ -1,0 +1,1 @@
+http://tutaza:8182/cxf/GestionPersona/obtener-pidm-persona?snumerodocumento=$!exchange.properties.snumerodocumento&slogin=$!exchange.properties.slogin&scodigo=$!exchange.properties.scodigo

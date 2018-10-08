@@ -1,0 +1,639 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:cxf="http://camel.apache.org/schema/cxf"
+	xmlns:ctx="http://www.springframework.org/schema/context" xmlns:jee="http://www.springframework.org/schema/jee"
+	xmlns:osgix="http://www.springframework.org/schema/osgi-compendium"
+	xmlns:camel="http://camel.apache.org/schema/spring"
+	xsi:schemaLocation="
+        http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+        http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd
+        http://camel.apache.org/schema/cxf http://camel.apache.org/schema/cxf/camel-cxf.xsd
+        http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd
+        http://www.springframework.org/schema/jee http://www.springframework.org/schema/jee/spring-jee.xsd
+        http://www.springframework.org/schema/osgi-compendium http://www.springframework.org/schema/osgi-compendium/spring-osgi-compendium.xsd">
+
+	<import resource="properties-beans.xml" />
+	<ctx:annotation-config />
+	<ctx:component-scan base-package="co.edu.uniandes*" />
+	
+	<!-- Provider -->
+	<bean id="jacksonProvider" class="org.codehaus.jackson.jaxrs.JacksonJaxbJsonProvider">
+		<property name="mapper" ref="objectMapper" />
+	</bean>
+	<bean class="org.codehaus.jackson.map.ObjectMapper" id="objectMapper">
+		<property name="serializationInclusion" value="NON_NULL" />
+	</bean>
+	
+	<!-- 	Logger -->
+	<bean id="andes_log" class="org.slf4j.LoggerFactory"
+		factory-method="getLogger">
+		<description>Logger Configuration</description>
+		<constructor-arg type="java.lang.String" value="uniandes-gestion-admitido" />
+	</bean>
+	
+	<!-- 	General Processor -->
+	<bean class="co.edu.uniandes.util.processor.ValidationRolesProccess" id="validationProccessor" />
+	
+	<bean class="co.edu.uniandes.processor.RequestAuditProcessor" id="requestAuditProcessor" />
+	<bean class="co.edu.uniandes.processor.ResponseAuditProcessor" id="responseAuditProcessor" />
+	<bean class="co.edu.uniandes.processor.RequestProcessor1" id="requestProcessor1" />
+	<bean class="co.edu.uniandes.processor.RequestProcessor2" id="requestProcessor2" />
+	<bean class="co.edu.uniandes.processor.AuthorizationProcessor" id="authorizationProcessor"/>
+	
+	<!-- 	Admision Pregrado Processor -->
+	<bean class="co.edu.uniandes.processor.admisionPregrado.DataProcessor" id="pregradoProcessor" />
+	
+	<!-- 	Admision Posgrado Processor -->
+	<bean class="co.edu.uniandes.processor.admisionPosgrado.DataProcessor" id="posgradoProcessor" />
+	
+	<!-- 	Admision Tipo Processor -->
+	<bean class="co.edu.uniandes.processor.admisionTipo.DataProcessor" id="tipoProcessor" />
+	
+	<!-- 	Admision Examen Processor -->
+	<bean class="co.edu.uniandes.processor.admisionExamen.DataProcessor" id="examenProcessor" />
+	
+	<!-- Connect database -->
+	<!-- SEARCH DATASOURCE BY JNDI -->
+	<jee:jndi-lookup expected-type="javax.sql.DataSource"
+		id="uni_andes_DS" jndi-name="osgi:service/${jndi.jdbc.uni_andes}" />
+	<!-- SQL COMPONENT -->
+
+	<bean class="org.apache.camel.component.sql.SqlComponent" id="sql">
+		<property name="dataSource" ref="uni_andes_DS" />
+	</bean>
+
+	<!-- 	Jass Authentication -->
+	<bean
+		class="co.edu.uniandes.util.rest.interceptor.CustomJAASMultipleOperationsAuthenticationFilter" id="authenticationInterceptor">
+		<property name="contextName" value="${jaas.login.module}" />
+		<property name="mensaje" value="${excepcion.autenticacion.fallida}" />
+	</bean>
+
+	<!-- 	ActiveMQ Configuration -->
+	<bean class="org.apache.activemq.ActiveMQConnectionFactory" id="jmsConnectionFactory"
+		depends-on="amq-props">
+		<property name="brokerURL" value="${AMQ.brokerURL}" />
+		<property name="userName" value="${AMQ.userName}" />
+		<property name="password" value="${AMQ.password}" />
+	</bean>
+	<bean class="org.apache.activemq.pool.PooledConnectionFactory"
+		destroy-method="stop" id="pooledConnectionFactory" init-method="start">
+		<property name="maxConnections" value="10" />
+		<property name="maximumActiveSessionPerConnection" value="100" />
+		<property name="blockIfSessionPoolIsFull" value="false" />
+		<property name="blockIfSessionPoolIsFullTimeout" value="10000" />
+		<property name="connectionFactory" ref="jmsConnectionFactory" />
+	</bean>
+	<bean class="org.apache.camel.component.jms.JmsConfiguration" id="jmsConfiguration">
+		<property name="connectionFactory" ref="pooledConnectionFactory" />
+	</bean>
+	<bean id="activemq" class="org.apache.activemq.camel.component.ActiveMQComponent">
+		<property name="Configuration" ref="jmsConfiguration" />
+	</bean>
+	
+	<!-- 	cxf Endpoint -->
+	<cxf:rsServer id="restServer" address="${rest.server.url.path}"
+		serviceClass="co.edu.uniandes.ws.RestService"
+		staticSubresourceResolution="true" loggingFeatureEnabled="true">
+		<cxf:providers>
+			<ref bean="jacksonProvider" />
+			<ref bean="authenticationInterceptor" />
+		</cxf:providers>
+	</cxf:rsServer>
+
+	<camelContext id="CONTEXT-GESTION-ADMITIDO" trace="false"
+		xmlns="http://camel.apache.org/schema/spring">
+		<propertyPlaceholder id="properties" location="ref:props" />
+
+		<onException>
+			<exception>java.net.ConnectException</exception>
+			<exception>java.net.SocketTimeoutException</exception>
+			<exception>java.net.UnknownHostException</exception>
+			<handled>
+				<constant>true</constant>
+			</handled>
+			<setProperty propertyName="message">
+				<simple>${exception.message}</simple>
+			</setProperty>
+			<to uri="direct:route-audit-request" />
+			<to uri="direct:route-error-handler" />
+			<to uri="direct:route-audit-response"/>
+		</onException>
+
+		<onException>
+			<exception>java.sql.SQLException</exception>
+			<handled>
+				<constant>true</constant>
+			</handled>
+			<setProperty propertyName="message">
+				<simple>${exception.message}</simple>
+			</setProperty>
+			<to uri="direct:route-audit-request" />
+			<to uri="direct:route-error-handler" />
+			<to uri="direct:route-audit-response" />
+		</onException>
+
+		<onException>
+			<exception>java.lang.IllegalArgumentException</exception>
+			<handled>
+				<constant>true</constant>
+			</handled>
+			<setProperty propertyName="message">
+				<simple>${exception.message}</simple>
+			</setProperty>
+			<to uri="direct:route-audit-request" />
+			<to uri="direct:route-error-handler" />
+			<to uri="direct:route-audit-response" />
+		</onException>
+		
+		<!-- 		Ruta Principal -->
+		<route id="ROUTE-GESTION-ADMITIDO" streamCache="true">
+			<from uri="cxfrs:bean:restServer?bindingStyle=SimpleConsumer" />
+			<log loggerRef="andes_log" loggingLevel="INFO" message="Nombre de la operacion: ${headers.CamelHttpPath}" />
+			<setProperty propertyName="ldaprol">
+				<simple>{{ldap.role.check.privileges}}</simple>
+			</setProperty>
+			<setProperty propertyName="urlendpoint">
+				<simple>?${header.CamelHttpQuery}</simple>
+			</setProperty>
+			<setProperty propertyName="operation">
+				<simple>${header.CamelHttpPath}</simple>
+			</setProperty>
+			<process ref="validationProccessor" />
+			
+			<camel:log message="Role Ldap Validation ${property.isUser}"
+				loggingLevel="INFO" />
+			<camel:log message="Operation Name: ${header.CamelHttpPath}"
+				loggingLevel="INFO" loggerRef="andes_log" />
+			<to uri="direct:route-audit-request" />
+			
+			<camel:choice>
+				<camel:when>
+					<camel:simple>${property.isUser}</camel:simple>
+					<camel:choice>
+						<camel:when>
+							<simple>${headers.CamelHttpPath} == {{operation.pregrado}}</simple>
+							<camel:log message="OPERATION NAME: ${header.operationName}" loggingLevel="INFO" loggerRef="andes_log" />
+							<camel:process ref="requestProcessor2" />
+							<camel:to uri="direct:admitidoPregrado"/>
+						</camel:when>
+						<camel:when>
+							<simple>${headers.CamelHttpPath} == {{operation.posgrado}}</simple>
+							<camel:log message="OPERATION NAME: ${header.operationName}" loggingLevel="INFO" loggerRef="andes_log" />
+							<camel:process ref="requestProcessor2" />
+							<camel:to uri="direct:admitidoPosgrado" />
+						</camel:when>
+						<camel:when>
+							<simple>${headers.CamelHttpPath} == {{operation.examen}}</simple>
+							<camel:log message="OPERATION NAME: ${header.operationName}" loggingLevel="INFO" loggerRef="andes_log" />
+							<camel:process ref="requestProcessor2" />
+							<camel:to uri="direct:admitidoExamen" />
+						</camel:when>
+						<camel:when>
+							<simple>${headers.CamelHttpPath} == {{operation.tipo}}</simple>
+							<camel:log message="OPERATION NAME: ${header.operationName}" loggingLevel="INFO" loggerRef="andes_log" />
+							<camel:process ref="requestProcessor1" />
+							<camel:to uri="direct:admitidoTipo" />
+						</camel:when>
+						<camel:otherwise>
+							<setProperty propertyName="message">
+								<simple>{{excepcion.operacion.invalida}}</simple>
+							</setProperty>
+							<to uri="direct:route-error-handler" />
+							<to uri="direct:route-audit-response" />
+						</camel:otherwise>
+					</camel:choice>
+				</camel:when>
+				<camel:otherwise>
+					<setProperty propertyName="message">
+						<simple>{{excepcion.rol.invalido}}</simple>
+					</setProperty>
+					<camel:setHeader headerName="CamelHttpResponseCode">
+				        <camel:simple>{{http.code.forbidden}}</camel:simple>
+				    </camel:setHeader>
+					<to uri="direct:route-error-handler" />
+					<to uri="direct:route-audit-response" />
+				</camel:otherwise>
+			</camel:choice>
+		</route>
+		
+		<camel:route id="ROUTE-ADMITIDO-PREGRADO" streamCache="true" trace="false">
+			<from uri="direct:admitidoPregrado" />
+			<log loggerRef="andes_log" loggingLevel="INFO" message="Parametros de la consulta:  ${headers.HTTP_QUERY}" />
+			
+			<camel:choice>
+				<camel:when>
+				    <camel:simple>${property.spidm} != null and ${property.spidm} != ''</camel:simple>
+				    <camel:setProperty propertyName="isPIDM">
+				        <camel:simple>${property.spidm}</camel:simple>
+				    </camel:setProperty>
+				    <log loggerRef="andes_log"  loggingLevel="INFO" message="SPIDM is ${property.spidm}"/>
+				    <camel:setProperty propertyName="estado">
+				        <camel:constant>true</camel:constant>
+				    </camel:setProperty>
+				</camel:when>
+                
+	           <camel:otherwise>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="empty SPIDM...consume UNIANDES ::: WS-REST CONSULTA-PIDM}"/>
+	                           <removeHeaders pattern="*"/>
+	                           <setHeader headerName="CamelHttpUri">
+	                               <simple>{{url.consulta.pidm}}snumerodocumento=${property.snumerodocumento}&amp;slogin=${property.slogin}&amp;scodigo=${property.scodigo}</simple>
+	                           </setHeader>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="${headers.CamelHttpUri}"/>
+	                           <setHeader headerName="CamelHttpMethod">
+	                               <constant>GET</constant>
+	                           </setHeader>
+	                           <setHeader headerName="Content-Type">
+	                               <constant>application/x-www-form-urlencoded</constant>
+	                           </setHeader>
+	                           <camel:process id="_process3" ref="authorizationProcessor"/>
+					            <setHeader headerName="Authorization">
+					                <simple>Basic ${property.AuthToken}</simple>
+					            </setHeader>
+             				   <to uri="http4://dummyHttp?throwExceptionOnFailure=false"/>
+             				   <camel:setProperty propertyName="operacionExitosa">
+                               		<camel:jsonpath resultType="String" suppressExceptions="true">$.MensajeOut.BOperacionExitosa</camel:jsonpath>
+                            	</camel:setProperty>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="Response service UNIANDES ::: WS-REST CONSULTA-PIDM : ${body} code:${headers.CamelHttpResponseCode}"/>
+	                           <camel:choice>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '200' and ${property.operacionExitosa}</camel:simple>
+	                                   <camel:setProperty propertyName="isPIDM">
+	                                   		<camel:jsonpath resultType="String" suppressExceptions="true">$.Estudiante.SPidm</camel:jsonpath>
+	                                   </camel:setProperty>
+	                                   <camel:setProperty propertyName="estado">
+	                                   		<camel:constant>true</camel:constant>
+	                                   </camel:setProperty>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="SPIDM response ws jsonpath : ${property.isPIDM}"/>
+	                               </camel:when>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '404' </camel:simple>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.consulta.fallida}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:when>
+	                               <camel:otherwise>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.registros.vacios}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:otherwise>
+	                           </camel:choice>
+	                       </camel:otherwise>
+            </camel:choice>
+            
+            <to uri="velocity:template/query_admision_pregrado.vm"/> 
+            
+            <log loggerRef="andes_log" loggingLevel="INFO" message="QUERY::: ${body}" />
+            
+            <camel:setHeader headerName="CamelSqlQuery">
+                        <camel:simple>${body}</camel:simple>
+            </camel:setHeader>
+            
+            <camel:to uri="sql:dumy"/>
+
+			<log loggerRef="andes_log" loggingLevel="DEBUG" message="QUERY RESPONSE ${body}" />
+
+			<camel:bean ref="pregradoProcessor" />
+
+			<to uri="direct:route-audit-response" />
+
+		</camel:route>
+
+		<camel:route id="ROUTE-ADMITIDO-TIPO" streamCache="true" trace="false">
+		
+			<from uri="direct:admitidoTipo" />
+			
+			<log loggerRef="andes_log" loggingLevel="INFO" message="Parametros de la consulta:  ${headers.HTTP_QUERY}" />
+			
+			<camel:choice>
+				<camel:when>
+				    <camel:simple>${property.spidm} != null and ${property.spidm} != ''</camel:simple>
+				    <camel:setProperty propertyName="isPIDM">
+				        <camel:simple>${property.spidm}</camel:simple>
+				    </camel:setProperty>
+				    <log loggerRef="andes_log"  loggingLevel="INFO" message="SPIDM is ${property.spidm}"/>
+				    <camel:setProperty propertyName="estado">
+				        <camel:constant>true</camel:constant>
+				    </camel:setProperty>
+				</camel:when>
+                
+	           <camel:otherwise>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="empty SPIDM...consume UNIANDES ::: WS-REST CONSULTA-PIDM}"/>
+	                           <removeHeaders pattern="*"/>
+	                           <setHeader headerName="CamelHttpUri">
+	                               <simple>{{url.consulta.pidm}}snumerodocumento=${property.snumerodocumento}&amp;slogin=${property.slogin}&amp;scodigo=${property.scodigo}</simple>
+	                           </setHeader>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="${headers.CamelHttpUri}"/>
+	                           <setHeader headerName="CamelHttpMethod">
+	                               <constant>GET</constant>
+	                           </setHeader>
+	                           <setHeader headerName="Content-Type">
+	                               <constant>application/x-www-form-urlencoded</constant>
+	                           </setHeader>
+	                           <camel:process ref="authorizationProcessor"/>
+					            <setHeader headerName="Authorization">
+					                <simple>Basic ${property.AuthToken}</simple>
+					            </setHeader>
+             				   <to uri="http4://dummyHttp?throwExceptionOnFailure=false"/>
+             				   <camel:setProperty propertyName="operacionExitosa">
+                               		<camel:jsonpath resultType="String" suppressExceptions="true">$.MensajeOut.BOperacionExitosa</camel:jsonpath>
+                            	</camel:setProperty>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="Response service UNIANDES ::: WS-REST CONSULTA-PIDM : ${body} code:${headers.CamelHttpResponseCode}"/>
+	                           <camel:choice>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '200' and ${property.operacionExitosa}</camel:simple>
+	                                   <camel:setProperty propertyName="isPIDM">
+	                                   		<camel:jsonpath resultType="String" suppressExceptions="true">$.Estudiante.SPidm</camel:jsonpath>
+	                                   </camel:setProperty>
+	                                   <camel:setProperty propertyName="estado">
+	                                   		<camel:constant>true</camel:constant>
+	                                   </camel:setProperty>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="SPIDM response ws jsonpath : ${property.isPIDM}"/>
+	                               </camel:when>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '404' </camel:simple>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.consulta.fallida}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:when>
+	                               <camel:otherwise>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.registros.vacios}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:otherwise>
+	                           </camel:choice>
+	                       </camel:otherwise>
+            </camel:choice>
+            
+            <to uri="velocity:template/query_admision_tipo.vm"/> 
+            
+            <log loggerRef="andes_log" loggingLevel="INFO" message="QUERY::: ${body}" />
+            
+            <camel:setHeader headerName="CamelSqlQuery">
+                        <camel:simple>${body}</camel:simple>
+            </camel:setHeader>
+            
+            <camel:to uri="sql:dumy"/>
+
+			<log loggerRef="andes_log" loggingLevel="DEBUG" message="QUERY RESPONSE ${body}" />
+
+			<camel:bean ref="tipoProcessor" />
+
+			<to uri="direct:route-audit-response" />
+
+		</camel:route>
+
+		<camel:route id="ROUTE-ADMITIDO-POSGRADO" streamCache="true" trace="false">
+		
+			<from uri="direct:admitidoPosgrado" />
+			
+			<log loggerRef="andes_log" loggingLevel="INFO" message="Parametros de la consulta:  ${headers.HTTP_QUERY}" />
+			
+			<camel:choice>
+				<camel:when>
+				    <camel:simple>${property.spidm} != null and ${property.spidm} != ''</camel:simple>
+				    <camel:setProperty propertyName="isPIDM">
+				        <camel:simple>${property.spidm}</camel:simple>
+				    </camel:setProperty>
+				    <log loggerRef="andes_log"  loggingLevel="INFO" message="SPIDM is ${property.spidm}"/>
+				    <camel:setProperty propertyName="estado">
+				        <camel:constant>true</camel:constant>
+				    </camel:setProperty>
+				</camel:when>
+                
+	           <camel:otherwise>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="empty SPIDM...consume UNIANDES ::: WS-REST CONSULTA-PIDM}"/>
+	                           <removeHeaders pattern="*"/>
+	                           <setHeader headerName="CamelHttpUri">
+	                               <simple>{{url.consulta.pidm}}snumerodocumento=${property.snumerodocumento}&amp;slogin=${property.slogin}&amp;scodigo=${property.scodigo}</simple>
+	                           </setHeader>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="${headers.CamelHttpUri}"/>
+	                           <setHeader headerName="CamelHttpMethod">
+	                               <constant>GET</constant>
+	                           </setHeader>
+	                           <setHeader headerName="Content-Type">
+	                               <constant>application/x-www-form-urlencoded</constant>
+	                           </setHeader>
+	                           <camel:process ref="authorizationProcessor"/>
+					            <setHeader headerName="Authorization">
+					                <simple>Basic ${property.AuthToken}</simple>
+					            </setHeader>
+             				   <to uri="http4://dummyHttp?throwExceptionOnFailure=false"/>
+             				   <camel:setProperty propertyName="operacionExitosa">
+                               		<camel:jsonpath resultType="String" suppressExceptions="true">$.MensajeOut.BOperacionExitosa</camel:jsonpath>
+                            	</camel:setProperty>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="Response service UNIANDES ::: WS-REST CONSULTA-PIDM : ${body} code:${headers.CamelHttpResponseCode}"/>
+	                           <camel:choice>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '200' and ${property.operacionExitosa}</camel:simple>
+	                                   <camel:setProperty propertyName="isPIDM">
+	                                   		<camel:jsonpath resultType="String" suppressExceptions="true">$.Estudiante.SPidm</camel:jsonpath>
+	                                   </camel:setProperty>
+	                                   <camel:setProperty propertyName="estado">
+	                                   		<camel:constant>true</camel:constant>
+	                                   </camel:setProperty>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="SPIDM response ws jsonpath : ${property.isPIDM}"/>
+	                               </camel:when>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '404' </camel:simple>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.consulta.fallida}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:when>
+	                               <camel:otherwise>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.registros.vacios}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:otherwise>
+	                           </camel:choice>
+	                       </camel:otherwise>
+            </camel:choice>
+            
+            <to uri="velocity:template/query_admision_posgrado.vm"/> 
+            
+            <log loggerRef="andes_log" loggingLevel="INFO" message="QUERY::: ${body}" />
+            
+            <camel:setHeader headerName="CamelSqlQuery">
+                        <camel:simple>${body}</camel:simple>
+            </camel:setHeader>
+            
+            <camel:to uri="sql:dumy"/>
+
+			<log loggerRef="andes_log" loggingLevel="DEBUG" message="QUERY RESPONSE ${body}" />
+
+			<camel:bean ref="posgradoProcessor" />
+
+			<to uri="direct:route-audit-response" />
+			
+		</camel:route>
+		
+		<camel:route id="ROUTE-ADMITIDO-EXAMEN" streamCache="true" trace="false">
+		
+			<from uri="direct:admitidoExamen" />
+			
+			<log loggerRef="andes_log" loggingLevel="INFO" message="Parametros de la consulta:  ${headers.HTTP_QUERY}" />
+			
+			<camel:choice>
+				<camel:when>
+				    <camel:simple>${property.spidm} != null and ${property.spidm} != ''</camel:simple>
+				    <camel:setProperty propertyName="isPIDM">
+				        <camel:simple>${property.spidm}</camel:simple>
+				    </camel:setProperty>
+				    <log loggerRef="andes_log"  loggingLevel="INFO" message="SPIDM is ${property.spidm}"/>
+				    <camel:setProperty propertyName="estado">
+				        <camel:constant>true</camel:constant>
+				    </camel:setProperty>
+				</camel:when>
+                
+	           <camel:otherwise>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="empty SPIDM...consume UNIANDES ::: WS-REST CONSULTA-PIDM}"/>
+	                           <removeHeaders pattern="*"/>
+	                           <setHeader headerName="CamelHttpUri">
+	                               <simple>{{url.consulta.pidm}}snumerodocumento=${property.snumerodocumento}&amp;slogin=${property.slogin}&amp;scodigo=${property.scodigo}</simple>
+	                           </setHeader>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="${headers.CamelHttpUri}"/>
+	                           <setHeader headerName="CamelHttpMethod">
+	                               <constant>GET</constant>
+	                           </setHeader>
+	                           <setHeader headerName="Content-Type">
+	                               <constant>application/x-www-form-urlencoded</constant>
+	                           </setHeader>
+	                           <camel:process ref="authorizationProcessor"/>
+					            <setHeader headerName="Authorization">
+					                <simple>Basic ${property.AuthToken}</simple>
+					            </setHeader>
+             				   <to uri="http4://dummyHttp?throwExceptionOnFailure=false"/>
+             				   <camel:setProperty propertyName="operacionExitosa">
+                               		<camel:jsonpath resultType="String" suppressExceptions="true">$.MensajeOut.BOperacionExitosa</camel:jsonpath>
+                            	</camel:setProperty>
+	                           <log loggerRef="andes_log" loggingLevel="INFO" message="Response service UNIANDES ::: WS-REST CONSULTA-PIDM : ${body} code:${headers.CamelHttpResponseCode}"/>
+	                           <camel:choice>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '200' and ${property.operacionExitosa}</camel:simple>
+	                                   <camel:setProperty propertyName="isPIDM">
+	                                   		<camel:jsonpath resultType="String" suppressExceptions="true">$.Estudiante.SPidm</camel:jsonpath>
+	                                   </camel:setProperty>
+	                                   <camel:setProperty propertyName="estado">
+	                                   		<camel:constant>true</camel:constant>
+	                                   </camel:setProperty>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="SPIDM response ws jsonpath : ${property.isPIDM}"/>
+	                               </camel:when>
+	                               <camel:when>
+	                                   <camel:simple>${headers.CamelHttpResponseCode} == '404' </camel:simple>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.consulta.fallida}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:when>
+	                               <camel:otherwise>
+	                                   <log loggerRef="andes_log" loggingLevel="INFO" message="Existe un problema con la operacion obtener-pidm"/>
+	                                   <setProperty propertyName="estado">
+	                                   		<constant>false</constant>
+	                                   </setProperty>
+	                                   <setProperty propertyName="message">
+	                                   		<simple>{{excepcion.registros.vacios}}</simple>
+	                                   </setProperty>
+	                                   <to uri="direct:route-error-handler" />
+	                               </camel:otherwise>
+	                           </camel:choice>
+	                       </camel:otherwise>
+            </camel:choice>
+            
+            <to uri="velocity:template/query_admision_examen.vm"/> 
+            
+            <log loggerRef="andes_log" loggingLevel="INFO" message="QUERY::: ${body}" />
+            
+            <camel:setHeader headerName="CamelSqlQuery">
+                        <camel:simple>${body}</camel:simple>
+            </camel:setHeader>
+            
+            <camel:to uri="sql:dumy"/>
+
+			<log loggerRef="andes_log" loggingLevel="DEBUG" message="QUERY RESPONSE ${body}" />
+
+			<camel:bean ref="examenProcessor" />
+
+			<to uri="direct:route-audit-response" />
+			
+		</camel:route>
+
+		<!-- Ruta para la auditoria de request -->
+		<route id="ROUTE-AUDIT-REQUEST" streamCache="true" trace="false">
+			<from uri="direct:route-audit-request" />
+			<setProperty propertyName="versionservicio">
+				<simple>{{version.service.uniandes.gestion.admitido}}</simple>
+			</setProperty>
+			<bean ref="requestAuditProcessor" />
+			<to pattern="InOnly" uri="seda:sedaSendAudit" />
+		</route>
+		
+		<!-- Ruta para la auditoria de response -->
+		<route id="ROUTE-AUDIT-RESPONSE" streamCache="true" trace="false">
+			<from uri="direct:route-audit-response" />
+			<bean ref="responseAuditProcessor" />
+			<to pattern="InOnly" uri="seda:sedaSendAudit" />
+		</route>
+
+		<!-- ruta que encola tx de auditoria -->
+		<route id="SEND-AUDIT" customId="true" streamCache="true">
+			<from uri="seda:sedaSendAudit" />
+			<log loggerRef="andes_log" loggingLevel="INFO" message="Entra a Route Audit" />
+			<log loggerRef="andes_log" loggingLevel="DEBUG"
+				message="Property REQUEST_AUDIT: ${property.REQUEST_AUDIT}" />
+			<setBody>
+				<simple>${property.REQUEST_AUDIT}</simple>
+			</setBody>
+			<to uri="activemq:queue:AUDIT-QUEUE" />
+			<log loggerRef="andes_log" loggingLevel="DEBUG"
+				message="Sale De Audit Route ${body}" />
+		</route>
+
+		<!-- ruta que construye response para errores -->
+		<route id="ROUTE-ERROR-HANDLER" customId="true" streamCache="true">
+			<from uri="direct:route-error-handler" />
+			<log loggingLevel="ERROR" message="Exception: ${property.message}" />
+			<setProperty propertyName="estado">
+				<constant>false</constant>
+			</setProperty>
+			<bean ref="responseErrorHandler" />
+			<to uri="direct:route-audit-response" />
+		</route>
+
+	</camelContext>
+
+
+</beans>

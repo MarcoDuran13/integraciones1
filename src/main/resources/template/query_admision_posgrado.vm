@@ -1,0 +1,35 @@
+#if($!exchange.properties.isPIDM && $!exchange.properties.isPIDM != '')
+	 SELECT DISTINCT spriden_id                                                 CODIGO_ESTUDIANTE
+	      ,saradap_term_code_entry                                              PERIODO
+	      ,sorlcur_levl_code                                                    NIVEL
+	      ,sorlcur_program                                                      CODIGO_PROGRAMA
+	      ,DECODE(saradap_apst_code,'D',1,0)                                    ADMITIDO
+	      ,'WEB'                                                                TIPO_INSCRIP
+	   FROM SARADAP
+	      ,SORLCUR
+	      ,SMRPRLE
+	      ,SPRIDEN
+	      ,SPBPERS
+	 WHERE saradap_pidm             = spriden_pidm
+	   #if($!exchange.properties.speriodo && $!exchange.properties.speriodo != '')
+		AND   saradap_term_code_entry = '$!exchange.properties.speriodo' 
+	  #end  
+	   AND spriden_change_ind       IS NULL
+	   AND spbpers_pidm             = spriden_pidm
+	   AND saradap_pidm             = sorlcur_pidm
+	   AND saradap_levl_code        = sorlcur_levl_code
+	   AND saradap_term_code_entry  = sorlcur_term_code
+	   AND sorlcur_priority_no      = 1
+	   AND sorlcur_lmod_code        = 'ADMISSIONS'
+	   AND sorlcur_cact_code        = 'ACTIVE'
+	     #if($!exchange.properties.snivel && $!exchange.properties.snivel != '')
+		AND   sorlcur_levl_code  = '$!exchange.properties.snivel' 
+	  #end  
+	   AND saradap_admt_code        NOT IN ('I1','EI')
+	   AND sorlcur_key_seqno        = saradap_appl_no
+	   AND sorlcur_program          = smrprle_program
+	   AND sorlcur_current_cde      = 'Y'   
+ 	   AND   spriden_pidm = '$!exchange.properties.isPIDM' 
+#else 
+        SELECT '' FROM DUAL	
+#end  
